@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 )
 
 var (
@@ -18,7 +19,7 @@ var (
 
 func Marshal(v interface{}) ([]byte, error) {
 	b := &bytes.Buffer{}
-	if err := NewEncoder(b).Encode(v); err != nil {
+	if err := NewEncoder(b).Encode(v, ""); err != nil {
 		return nil, err
 	}
 	return b.Bytes(), nil
@@ -43,12 +44,16 @@ func NewEncoder(w io.Writer) *Encoder {
 }
 
 func (e *Encoder) writeVarint(v int) error {
+	return e.writeVarint64(int64(v))
+}
+
+func (e *Encoder) writeVarint64(v int64) error {
 	l := binary.PutUvarint(e.buf, uint64(v))
 	_, err := e.w.Write(e.buf[:l])
 	return err
 }
 
-func (b *Encoder) Encode(v interface{}) (err error) {
+func (b *Encoder) Encode(v interface{}, tag string) (err error) {
 	switch cv := v.(type) {
 	case encoding.BinaryMarshaler:
 		buf, err := cv.MarshalBinary()
@@ -73,7 +78,7 @@ func (b *Encoder) Encode(v interface{}) (err error) {
 		case reflect.Array:
 			l := t.Len()
 			for i := 0; i < l; i++ {
-				if err = b.Encode(rv.Index(i).Addr().Interface()); err != nil {
+				if err = b.Encode(rv.Index(i).Addr().Interface(), ""); err != nil {
 					return
 				}
 			}
@@ -84,7 +89,7 @@ func (b *Encoder) Encode(v interface{}) (err error) {
 				return
 			}
 			for i := 0; i < l; i++ {
-				if err = b.Encode(rv.Index(i).Addr().Interface()); err != nil {
+				if err = b.Encode(rv.Index(i).Addr().Interface(), ""); err != nil {
 					return
 				}
 			}
@@ -95,7 +100,7 @@ func (b *Encoder) Encode(v interface{}) (err error) {
 				if v := rv.Field(i); v.CanSet() && t.Field(i).Name != "_" {
 					// take the address of the field, so structs containing structs
 					// are correctly encoded.
-					if err = b.Encode(v.Addr().Interface()); err != nil {
+					if err = b.Encode(v.Addr().Interface(), rv.Type().Field(i).Tag.Get("bin")); err != nil {
 						return
 					}
 				}
@@ -108,10 +113,10 @@ func (b *Encoder) Encode(v interface{}) (err error) {
 			}
 			for _, key := range rv.MapKeys() {
 				value := rv.MapIndex(key)
-				if err = b.Encode(key.Interface()); err != nil {
+				if err = b.Encode(key.Interface(), ""); err != nil {
 					return err
 				}
-				if err = b.Encode(value.Interface()); err != nil {
+				if err = b.Encode(value.Interface(), ""); err != nil {
 					return err
 				}
 			}
@@ -130,7 +135,11 @@ func (b *Encoder) Encode(v interface{}) (err error) {
 			err = binary.Write(b.w, b.Order, out)
 
 		case reflect.Int:
-			err = binary.Write(b.w, b.Order, int64(rv.Int()))
+			if strings.Contains(tag, "varint") {
+				err = b.writeVarint64(rv.Int())
+			} else {
+				err = binary.Write(b.w, b.Order, int64(rv.Int()))
+			}
 
 		case reflect.Uint:
 			err = binary.Write(b.w, b.Order, int64(rv.Uint()))
@@ -139,7 +148,11 @@ func (b *Encoder) Encode(v interface{}) (err error) {
 			reflect.Int32, reflect.Uint32, reflect.Int64, reflect.Uint64,
 			reflect.Float32, reflect.Float64,
 			reflect.Complex64, reflect.Complex128:
-			err = binary.Write(b.w, b.Order, v)
+			if strings.Contains(tag, "varint") {
+				err = b.writeVarint64(int64(rv.Int()))
+			} else {
+				err = binary.Write(b.w, b.Order, v)
+			}
 
 		default:
 			return errors.New("binary: unsupported type " + t.String())
